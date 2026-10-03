@@ -27,7 +27,9 @@ import json
 import os
 import random
 import re
+import secrets
 import smtplib
+import time
 import threading
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -45,7 +47,7 @@ if not hasattr(st, "fragment"):
         return lambda f: f
     st.fragment = _fragment_fallback
 
-# اصل GPS لوکیشن کے لیے
+# اصل GPS لوکیشن کے لیے (پیکج اوپر خود انسٹال ہو جاتا ہے)
 try:
     from streamlit_geolocation import streamlit_geolocation
     GEO_AVAILABLE = True
@@ -59,12 +61,13 @@ APP_NAME = "FamilyCare / فیملی کیئر"
 APP_TAGLINE = "Together. Safe. Supported. / باہم۔ محفوظ۔ بااختیار۔"
 APP_FULL_TITLE = f"{APP_NAME} — Family Support System"
 APP_ORGANIZATION = "FamilyCare Systems"
-APP_VERSION = "44.0.0-NO-EMAIL-PW-REQUIRED"
+APP_VERSION = "45.0.0-STAY-LOGGED-IN-GPS-FIX"
 
 ADMIN_REAL_PHONE = "03434067496"
 ADMIN_SENDER_EMAIL = "moudasirkhan40@gmail.com"
 
-# ای میل پاسورڈ اختیاری کر دیا گیا ہے - نہ بھی ہو تو ایپ بغیر کسی جھنجھٹ کے واٹس ایپ پر چلے گی
+# 📧 Gmail App Password یہاں اندر لکھ دیں (نیا والا! پرانا Google سے منسوخ کر دیں)۔
+# فارمیٹ: "abcd efgh ijkl mnop"   — جب تک نہ لکھیں، ای میل OTP/الرٹ نہیں جائیں گے مگر PIN لاگ ان چلتا رہے گا۔
 PASTE_GMAIL_APP_PASSWORD_HERE = ""
 
 try:
@@ -77,10 +80,14 @@ ADMIN_APP_PASSWORD = _secret_pw or PASTE_GMAIL_APP_PASSWORD_HERE
 ENABLE_TEST_OTP = True
 DEFAULT_TEST_OTP = "123456"
 
+# 💰 ڈپازٹ کی حفاظت: False = جب تک رسید سے رقم نہ ملے، ڈپازٹ ایڈمن کی منظوری کے لیے رکتا ہے (محفوظ)
+# True = رسید سے مطابقت نہ بھی ہو تو رقم فوراً شامل ہو جائے (غیر محفوظ، جعلی رسید کا خطرہ)
+INSTANT_ADD_WITHOUT_VERIFICATION = False
+
 EMOTIONAL_THANKYOU_MESSAGES = [
     "✨ **شکر گزاری و دعا:** آپ کے اس خلوصِ دل سے کسی کا گھر روشن ہوا ہے! اللہ آپ کے رزق اور صحت میں برکت دے۔ آمین! 🤲💖",
     "🌟 **ایثار:** خون کے رشتوں کی حفاظت اور باہمی مدد ہی حقیقی طاقت ہے۔ آپ کے اس قدم کا تہہ دل سے شکریہ! 🛡️✨",
-    "💫 **شعر:** \n*ذرا سا قطرہ سہی پر خلوص کا ہے,* \n*یہی خلوص تو آپس میں جوڑ رکھتا ہے!* 🌹",
+    "💫 **شعر:**  \n*ذرا سا قطرہ سہی پر خلوص کا ہے،*  \n*یہی خلوص تو آپس میں جوڑ رکھتا ہے!* 🌹",
     "💖 **احساس:** آپ کا جمع کرایا گیا ایک ایک روپیہ فیملی کے لیے ایک مضبوط ڈھال بنتا ہے۔ جزاک اللہ! 🌺"
 ]
 
@@ -91,79 +98,18 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# ==============================================================================
-# PWA FULL MANIFEST & SERVICE WORKER INJECTION
-# ==============================================================================
-pwa_manifest_json = {
-    "name": "FamilyCare — Family Support System",
-    "short_name": "FamilyCare",
-    "description": "Together. Safe. Supported. A complete, secure family care and emergency support system.",
-    "start_url": "/",
-    "scope": "/",
-    "display": "standalone",
-    "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
-    "orientation": "portrait-primary",
-    "theme_color": "#0F172A",
-    "background_color": "#0F172A",
-    "lang": "ur",
-    "dir": "rtl",
-    "iarc_rating_id": "e84b0000-0000-0000-0000-000000000000",
-    "icons": [
-        {
-            "src": "https://cdn-icons-png.flaticon.com/512/3064/3064197.png",
-            "sizes": "192x192",
-            "type": "image/png",
-            "purpose": "any maskable"
-        },
-        {
-            "src": "https://cdn-icons-png.flaticon.com/512/3064/3064197.png",
-            "sizes": "512x512",
-            "type": "image/png",
-            "purpose": "any maskable"
-        }
-    ]
-}
-
-manifest_base64 = base64.b64encode(json.dumps(pwa_manifest_json).encode('utf-8')).decode('utf-8')
-
-# Android viewport + PWA style meta
-st.markdown(f"""
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-    <meta name="theme-color" content="#0F172A">
-    <meta name="mobile-web-app-capable" content="yes">
-    <link rel="manifest" href="data:application/json;base64,{manifest_base64}">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="FamilyCare">
-""", unsafe_allow_html=True)
-
-# Clean & High-Contrast Custom CSS - Zero Watermark + Anti-Refresh Lock
+# Clean & High-Contrast Custom CSS - Zero Word Overlapping + Android Responsive
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Nastaliq+Urdu:wght@400;700&family=Poppins:wght@400;600;700&display=swap');
     
-    /* 🔴 Streamlit کے تمام سروس آئیکنز، ٹاپ بارز، واٹر مارک اور فوٹر کو مکمل طور پر غائب کرنا */
-    #MainMenu, header, footer, 
-    [data-testid="stHeader"], 
-    [data-testid="stDecoration"], 
-    .stDeployButton, 
-    [data-testid="stStatusWidget"], 
-    [data-testid="stFooter"],
-    div[class*="viewerBadge"],
-    div[class*="styles_viewerBadge"],
-    footer:after, 
-    .viewerBadge_container__163Vn {
-        display: none !important;
-        visibility: hidden !important;
-        height: 0px !important;
-        opacity: 0 !important;
-        pointer-events: none !important;
-    }
-
-    /* 🔒 موبائل پر زبردستی سوائپ ریفریش (Pull-to-Refresh) کو مکمل لاک کرنا */
-    html, body, [data-testid="stAppViewContainer"], .main {
+    /* 🔒 موبائل پر نیچے کھینچ کر ریفریش (Pull-to-Refresh) مکمل بند */
+    html, body, .stApp, [data-testid="stApp"], [data-testid="stAppViewContainer"],
+    [data-testid="stMain"], [data-testid="stMainBlockContainer"], section.main, .main {
+        overscroll-behavior: none !important;
         overscroll-behavior-y: none !important;
-        overscroll-behavior-x: none !important;
+    }
+    html, body, [data-testid="stAppViewContainer"] {
         touch-action: pan-x pan-y !important;
         background-color: #0F172A !important;
         color: #FFFFFF !important;
@@ -180,10 +126,22 @@ st.markdown("""
         padding-bottom: 5rem !important;
         padding-left: 0.8rem !important;
         padding-right: 0.8rem !important;
+        padding-bottom: calc(5rem + env(safe-area-inset-bottom)) !important;
         max-width: 100% !important;
     }
+
+    #MainMenu, footer, header, [data-testid="stHeader"], .stDeployButton, [data-testid="stDecoration"],
+    [data-testid="stStatusWidget"], [data-testid="stFooter"], [data-testid="appCreatorAvatar"],
+    div[class*="viewerBadge"], div[class*="styles_viewerBadge"], a[href*="streamlit.io"],
+    .viewerBadge_container__163Vn {
+        display: none !important;
+        visibility: hidden !important;
+        height: 0px !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+    }
     
-    /* Input Fields Fix - Bold Clear Text */
+    /* Input Fields Fix - Bold Clear Text (16px = Android zoom نہیں کرتا) */
     .stTextInput input, .stNumberInput input, .stTextArea textarea {
         background-color: #1E293B !important;
         color: #FFFFFF !important;
@@ -200,7 +158,7 @@ st.markdown("""
         min-height: 48px !important;
     }
     
-    /* Clean File Uploader Fix */
+    /* Clean File Uploader Fix - No Merged Text */
     [data-testid="stFileUploader"] {
         background-color: #1E293B !important;
         border: 2px dashed #0284C7 !important;
@@ -221,7 +179,7 @@ st.markdown("""
         font-size: 1rem !important;
     }
     
-    /* HIGH VISIBILITY SOLID BUTTONS */
+    /* HIGH VISIBILITY SOLID BUTTONS - 48px touch target for thumbs */
     .stButton>button, div[data-testid="stPopover"]>button, .stFormSubmitButton>button {
         background-color: #0284C7 !important;
         color: #FFFFFF !important;
@@ -242,7 +200,7 @@ st.markdown("""
     }
     .stButton>button:active { transform: scale(0.97); }
 
-    /* 📲 واٹس ایپ SOS بٹن */
+    /* 📲 واٹس ایپ SOS بٹن: چمکدار ہرا، بڑا، دھڑکتا ہوا تاکہ فوراً نظر آئے */
     div[data-testid="stLinkButton"] a,
     a[data-testid^="stBaseLinkButton"] {
         background: #25D366 !important;
@@ -387,7 +345,9 @@ st.markdown("""
         padding:10px 14px; margin-bottom:8px; font-size:0.98rem;
     }
 
+    /* ===================== ANDROID / MOBILE LAYOUT ===================== */
     @media (max-width: 768px) {
+        /* ہر columns والی قطار موبائل پر اوپر نیچے آ جائے (کوئی لفظ نہ کٹے) */
         div[data-testid="stHorizontalBlock"] {
             flex-wrap: wrap !important;
             gap: 0.4rem !important;
@@ -415,8 +375,96 @@ st.markdown("""
         [data-testid="stDataFrame"] { overflow-x: auto; }
         audio { width: 100% !important; }
     }
+    @media (max-width: 380px) {
+        .metric-card-white h4 { font-size: 0.95rem !important; }
+        .stButton>button { font-size: 0.98rem !important; padding: 0.5rem 0.7rem !important; }
+    }
     </style>
 """, unsafe_allow_html=True)
+
+
+# ==============================================================================
+# BROWSER TWEAKS: ایپ آئیکن/مینیفیسٹ، Streamlit بیج چھپانا، نیچے کھینچ کر ریفریش روکنا
+# ==============================================================================
+@st.cache_resource
+def make_app_icon_b64():
+    try:
+        import io
+        from PIL import Image, ImageDraw
+        S = 512
+        img = Image.new("RGBA", (S, S), (15, 23, 42, 255))
+        d = ImageDraw.Draw(img)
+        shield = [(256, 70), (430, 130), (430, 270), (256, 450), (82, 270), (82, 130)]
+        d.polygon(shield, fill=(2, 132, 199, 255))
+        d.line(shield + [shield[0]], fill=(255, 255, 255, 255), width=14, joint="curve")
+        d.line([(180, 260), (240, 320), (340, 200)], fill=(255, 255, 255, 255), width=26, joint="curve")
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return ""
+
+_BROWSER_JS = """
+<script>
+(function () {
+  var P, D;
+  try { P = window.parent; D = P.document; } catch (e) { return; }
+  var ICON = "ICONB64";
+  try {
+    var icons = ICON ? [
+      {src: "data:image/png;base64," + ICON, sizes: "512x512", type: "image/png", purpose: "any"},
+      {src: "data:image/png;base64," + ICON, sizes: "512x512", type: "image/png", purpose: "maskable"}
+    ] : [];
+    var m = {
+      name: "FamilyCare - Family Support System", short_name: "FamilyCare",
+      description: "Together. Safe. Supported.",
+      start_url: P.location.origin + P.location.pathname, scope: P.location.origin + "/",
+      display: "standalone", orientation: "portrait",
+      theme_color: "#0F172A", background_color: "#0F172A", lang: "ur", dir: "rtl", icons: icons
+    };
+    var old = D.querySelector('link[rel="manifest"]'); if (old) old.remove();
+    var l = D.createElement("link"); l.rel = "manifest";
+    l.href = P.URL.createObjectURL(new P.Blob([JSON.stringify(m)], {type: "application/manifest+json"}));
+    D.head.appendChild(l);
+    if (ICON) {
+      var a = D.createElement("link"); a.rel = "apple-touch-icon"; a.href = "data:image/png;base64," + ICON; D.head.appendChild(a);
+    }
+    [["theme-color", "#0F172A"], ["mobile-web-app-capable", "yes"], ["apple-mobile-web-app-capable", "yes"]].forEach(function (x) {
+      var t = D.querySelector('meta[name="' + x[0] + '"]');
+      if (!t) { t = D.createElement("meta"); t.name = x[0]; D.head.appendChild(t); }
+      t.content = x[1];
+    });
+  } catch (e) {}
+
+  function hideBranding(doc) {
+    try {
+      doc.querySelectorAll('[class*="viewerBadge"], [data-testid="appCreatorAvatar"], [data-testid="stStatusWidget"], a[href*="streamlit.io"], a[href*="share.streamlit.io"]').forEach(function (e) {
+        e.style.setProperty("display", "none", "important");
+      });
+    } catch (e) {}
+  }
+  function run() {
+    hideBranding(D);
+    try { hideBranding(window.top.document); } catch (e) {}
+  }
+  run(); setInterval(run, 1000);
+  try { new P.MutationObserver(run).observe(D.body, {childList: true, subtree: true}); } catch (e) {}
+
+  try {
+    if (!P.__fcPTR) {
+      P.__fcPTR = true;
+      var startY = 0;
+      D.addEventListener("touchstart", function (e) { startY = e.touches[0].clientY; }, {passive: true});
+      D.addEventListener("touchmove", function (e) {
+        var sc = D.querySelector('[data-testid="stMain"]') || D.querySelector("section.main") || D.scrollingElement;
+        if (sc && sc.scrollTop <= 0 && e.touches[0].clientY > startY + 4 && e.cancelable) { e.preventDefault(); }
+      }, {passive: false});
+    }
+  } catch (e) {}
+})();
+</script>
+"""
+components.html(_BROWSER_JS.replace("ICONB64", make_app_icon_b64()), height=0)
 
 # Helper Audio Functions
 def play_chat_sound():
@@ -425,6 +473,7 @@ def play_chat_sound():
 def play_emergency_siren():
     components.html("""<audio autoplay loop><source src="https://assets.mixkit.co/active_storage/sfx/995/995-preview.mp3" type="audio/mpeg"></audio>""", height=0)
 
+# Helper: نمبر کو صاف کرنا (space, dash ہٹانا) تاکہ لاگ ان میں غلطی نہ ہو
 def normalize_key(value):
     value = (value or "").strip()
     if "@" in value:
@@ -459,15 +508,17 @@ def send_real_gmail_otp(recipient_email, otp_code, user_name, reason="authentica
     except Exception as err:
         return False, str(err)
 
-def update_user_password_globally(phone_or_email, new_password):
+def update_user_password_globally(phone_or_email, new_password, revoke=True):
     if phone_or_email in st.session_state.registered_users:
         user_record = st.session_state.registered_users[phone_or_email]
         user_email = user_record.get("email")
-        
+
         for key, record in st.session_state.registered_users.items():
             if (user_email and record.get("email") == user_email) or key == phone_or_email:
                 record["password"] = new_password
                 record["must_change_pw"] = False
+        if revoke:
+            drop_tokens_for_user(phone_or_email)
 
 def otp_matches(entered, expected):
     entered = (entered or "").strip()
@@ -477,11 +528,14 @@ def otp_matches(entered, expected):
 
 
 # ==============================================================================
-# 1B. SHARED DATA STORE
+# 1B. SHARED DATA STORE (تمام ممبرز کا ڈیٹا ایک ہی جگہ، فائل میں محفوظ)
 # ==============================================================================
+# پہلے ہر موبائل کی اپنی الگ session تھی، اس لیے ایڈمن کا شامل کیا ہوا ممبر
+# دوسرے فون پر نظر ہی نہیں آتا تھا۔ اب سب کا ڈیٹا ایک مشترکہ store میں ہے
+# جو familycare_data.json فائل میں بھی محفوظ ہوتا ہے۔
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "familycare_data.json")
 SHARED_KEYS = ["registered_users", "payment_accounts", "transactions",
-               "assistance_requests", "chat_threads", "submitted_txn_ids", "sos_events"]
+               "assistance_requests", "chat_threads", "submitted_txn_ids", "sos_events", "login_tokens"]
 
 def _default_store():
     admin = {
@@ -503,6 +557,7 @@ def _default_store():
         "chat_threads": {"GENERAL": [], "ISSUES": [], "APPEALS": []},
         "submitted_txn_ids": set(),
         "sos_events": [],
+        "login_tokens": {},
     }
 
 @st.cache_resource
@@ -526,6 +581,9 @@ def get_store():
     return store
 
 STORE = get_store()
+# پرانے محفوظ شدہ store میں نئی چابیاں نہ ہوں تو خود بنا دیں (کوڈ اپڈیٹ کے بعد ایرر سے بچاؤ)
+for _sk, _sv in _default_store().items():
+    STORE.setdefault(_sk, _sv)
 
 def save_store():
     try:
@@ -547,16 +605,75 @@ def save_store():
                 json.dump(data, f, ensure_ascii=False)
             os.replace(tmp, DATA_FILE)
     except Exception:
-        pass
+        pass  # read-only فائل سسٹم ہو تو ایپ پھر بھی چلتی رہے
 
 def rerun():
     save_store()
     st.rerun()
 
+# ------------------------------------------------------------------------------
+# Notification helpers (Email + WhatsApp share text)
+# ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# STAY-LOGGED-IN: لاگ ان یاد رکھنا (30 دن)، تاکہ ریفریش یا ایپ دوبارہ کھولنے پر پھر لاگ ان نہ کرنا پڑے
+# ------------------------------------------------------------------------------
+COOKIE_NAME = "fc_login"
+TOKEN_DAYS = 30
+
+def _read_login_cookie():
+    try:
+        return st.context.cookies.get(COOKIE_NAME)
+    except Exception:
+        return None
+
+def create_login_token(user_key):
+    now = time.time()
+    tokens = STORE["login_tokens"]
+    for t in [t for t, v in tokens.items() if v.get("exp", 0) < now]:
+        tokens.pop(t, None)
+    tok = secrets.token_hex(24)
+    tokens[tok] = {"user": user_key, "exp": now + TOKEN_DAYS * 86400}
+    st.session_state.my_token = tok
+    save_store()
+    return tok
+
+def user_from_token(tok):
+    rec = STORE["login_tokens"].get(tok or "")
+    if rec and rec.get("exp", 0) > time.time():
+        return rec.get("user")
+    return None
+
+def drop_login_token(*toks):
+    for t in toks:
+        if t:
+            STORE["login_tokens"].pop(t, None)
+    save_store()
+
+def drop_tokens_for_user(user_key):
+    users = STORE["registered_users"]
+    phone = users.get(user_key, {}).get("phone")
+    keys = {user_key} | {k for k, v in users.items() if phone and v.get("phone") == phone}
+    for t in [t for t, v in STORE["login_tokens"].items() if v.get("user") in keys]:
+        STORE["login_tokens"].pop(t, None)
+    save_store()
+
+def set_cookie_js(tok):
+    components.html(
+        "<script>try{var s=(window.parent.location.protocol==='https:')?'; Secure':'';"
+        f"window.parent.document.cookie='{COOKIE_NAME}={tok}; max-age={TOKEN_DAYS * 86400}; path=/; SameSite=Lax'+s;}}catch(e){{}}</script>",
+        height=0)
+
+def clear_cookie_js():
+    components.html(
+        "<script>try{window.parent.document.cookie='" + COOKIE_NAME + "=; max-age=0; path=/; SameSite=Lax';}catch(e){}</script>",
+        height=0)
+
 def to_intl_phone(local_phone):
+    # 03XXXXXXXXX -> 923XXXXXXXXX
     return "92" + local_phone[1:] if local_phone.startswith("0") else local_phone
 
 def send_bulk_email(recipients, subject, body):
+    """recipients = [(email, name), ...]  ایک ہی SMTP کنکشن سے سب کو۔"""
     result = {}
     if not ADMIN_APP_PASSWORD or not recipients:
         return {e: False for e, _ in recipients}
@@ -582,6 +699,7 @@ def send_bulk_email(recipients, subject, body):
     return result
 
 def send_otp_everywhere(user_data, otp_code, reason="authentication"):
+    """OTP ای میل پر بھیجتا ہے۔"""
     return send_real_gmail_otp(user_data.get("email", ""), otp_code, user_data["name"], reason)
 
 def build_sos_text(event, with_time=True):
@@ -591,6 +709,7 @@ def build_sos_text(event, with_time=True):
             f"{time_line}📍 لوکیشن: {loc_line}\nفوراً رابطہ کریں!")
 
 def notify_all_members(event):
+    """SOS دبتے ہی ای میل والے ممبرز کو خودکار ای میل، اور واٹس ایپ کے لیے تیار پیغام۔"""
     users = STORE["registered_users"]
     members = [(k, v) for k, v in users.items()
                if "@" not in k and v.get("status") == "ACTIVE" and k != event["phone"]]
@@ -602,10 +721,16 @@ def notify_all_members(event):
                for k, v in members]
     return {"text": text, "results": results}
 
+# ------------------------------------------------------------------------------
+# ID helper (ڈیلیٹ کے بعد بھی ID کبھی دہرائی نہ جائے)
+# ------------------------------------------------------------------------------
 def next_txn_id():
     ids = [t.get("id", 0) for t in STORE["transactions"]]
     return (max(ids) + 1) if ids else 101
 
+# ------------------------------------------------------------------------------
+# Receipt screenshot reader (OCR) — رقم اور ٹرانزیکشن آئی ڈی خود پڑھتا ہے
+# ------------------------------------------------------------------------------
 def extract_receipt_info(text):
     clean = text.replace(",", "")
     amounts = []
@@ -633,17 +758,12 @@ def read_receipt(file_bytes):
         import io
         import numpy as np
         from PIL import Image, ImageEnhance
-        
         img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
         img.thumbnail((1000, 1000))
-        
-        enhancer = ImageEnhance.Contrast(img)
-        img_prep = np.array(enhancer.enhance(1.8))
-        
+        img_prep = np.array(ImageEnhance.Contrast(img).enhance(1.8))
         engine = get_ocr_engine()
         result, _ = engine(img_prep)
         text = "\n".join(r[1] for r in (result or []))
-        
         if not text.strip():
             out["note"] = "تصویر سے کوئی تحریر نہیں پڑھی گئی"
             return out
@@ -656,6 +776,9 @@ def read_receipt(file_bytes):
         out["note"] = f"OCR ایرر: {err}"
     return out
 
+# ------------------------------------------------------------------------------
+# Bill voting rules: تمام ممبرز (درخواست دہندہ کے علاوہ) متفق ہوں تو پاس، ایک بھی نا منظور تو مسترد
+# ------------------------------------------------------------------------------
 def eligible_voters(req):
     return [k for k, v in STORE["registered_users"].items()
             if "@" not in k and v.get("status") == "ACTIVE" and k != req.get("member_key")]
@@ -671,11 +794,81 @@ def refresh_bill_status(req):
     else:
         req["status"] = "PENDING"
 
+
+# ==============================================================================
+# GPS COMPONENT: اپنا لوکیشن بٹن (کسی بیرونی پیکج کے بغیر)
+# ==============================================================================
+GEO_DIR = os.path.join(os.path.dirname(DATA_FILE), "fc_gps_component")
+GEO_HTML = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html,body{margin:0;padding:0;background:transparent;font-family:Arial,sans-serif;}
+  #b{width:100%;box-sizing:border-box;background:#0284C7;color:#fff;border:2px solid #38BDF8;border-radius:10px;
+     min-height:52px;font-size:17px;font-weight:800;cursor:pointer;padding:8px;}
+  #s{color:#CBD5E1;font-size:14px;margin-top:6px;text-align:center;min-height:18px;}
+</style></head><body>
+<button id="b">&#128205; اپنی لوکیشن آن کریں / Allow Location</button>
+<div id="s"></div>
+<script>
+  function send(type, data){ window.parent.postMessage(Object.assign({isStreamlitMessage:true,type:type}, data), "*"); }
+  function setValue(v){ send("streamlit:setComponentValue", {value:v, dataType:"json"}); }
+  send("streamlit:componentReady", {apiVersion:1});
+  send("streamlit:setFrameHeight", {height:92});
+  var st = document.getElementById("s"), btn = document.getElementById("b");
+  function getLoc(){
+    if(!navigator.geolocation){ st.innerText="❌ یہ براؤزر لوکیشن سپورٹ نہیں کرتا"; setValue({error:"not supported"}); return; }
+    st.innerText="⏳ لوکیشن لی جا رہی ہے... اگر پوچھا جائے تو Allow دبائیں";
+    navigator.geolocation.getCurrentPosition(function(p){
+      st.innerText="✅ لوکیشن مل گئی";
+      setValue({lat:p.coords.latitude, lon:p.coords.longitude, acc:p.coords.accuracy, ts:Date.now()});
+    }, function(e){
+      st.innerText="❌ اجازت نہیں ملی: Chrome ⋮ ← Site settings ← Location ← Allow";
+      setValue({error:e.message || "denied", ts:Date.now()});
+    }, {enableHighAccuracy:true, timeout:20000, maximumAge:0});
+  }
+  btn.addEventListener("click", getLoc);
+  setTimeout(getLoc, 600);
+</script></body></html>"""
+
+def get_gps_component():
+    try:
+        os.makedirs(GEO_DIR, exist_ok=True)
+        _p = os.path.join(GEO_DIR, "index.html")
+        _cur = None
+        if os.path.exists(_p):
+            with open(_p, "r", encoding="utf-8") as f:
+                _cur = f.read()
+        if _cur != GEO_HTML:
+            with open(_p, "w", encoding="utf-8") as f:
+                f.write(GEO_HTML)
+        return components.declare_component("fc_gps_widget", path=GEO_DIR)
+    except Exception:
+        return None
+
+_GPS = get_gps_component()
+
 # ==============================================================================
 # 2. DATABASE INITIALIZATION
 # ==============================================================================
 if 'registered_users' not in st.session_state:
-    st.session_state.registered_users = STORE["registered_users"]
+    st.session_state.registered_users = {
+        ADMIN_REAL_PHONE: {
+            "name": "Muhammad Mudassir (Admin / ایڈمن)", 
+            "email": ADMIN_SENDER_EMAIL, 
+            "password": "1234",
+            "role": "ADMIN", 
+            "status": "ACTIVE",
+            "must_change_pw": False
+        },
+        ADMIN_SENDER_EMAIL: {
+            "name": "Muhammad Mudassir (Admin / ایڈمن)", 
+            "email": ADMIN_SENDER_EMAIL, 
+            "password": "1234",
+            "role": "ADMIN", 
+            "status": "ACTIVE",
+            "must_change_pw": False
+        }
+    }
 
 if 'auth_state' not in st.session_state:
     st.session_state.auth_state = {
@@ -691,23 +884,47 @@ if 'auth_state' not in st.session_state:
         "forgot_target_user": None
     }
 
+if 'payment_accounts' not in st.session_state:
+    st.session_state.payment_accounts = [
+        {"id": 1, "type": "Easypaisa / ایزی پیسہ", "title": "Muhammad Mudassir", "number": ADMIN_REAL_PHONE, "bank": "Easypaisa", "iban": "-", "instructions": "Upload receipt screenshot after payment / رقم بھیج کر رسید کی تصویر اپ لوڈ کریں۔", "status": "ACTIVE"}
+    ]
+
+if 'transactions' not in st.session_state:
+    st.session_state.transactions = []
+
+if 'assistance_requests' not in st.session_state:
+    st.session_state.assistance_requests = []
+
+if 'chat_threads' not in st.session_state:
+    st.session_state.chat_threads = {"GENERAL": [], "ISSUES": [], "APPEALS": []}
+
+if 'submitted_txn_ids' not in st.session_state:
+    st.session_state.submitted_txn_ids = set()
+
+if 'active_sos_event' not in st.session_state:
+    st.session_state.active_sos_event = None
+
+if 'sound_type_trigger' not in st.session_state:
+    st.session_state.sound_type_trigger = None
+
+if 'last_deposit_msg' not in st.session_state:
+    st.session_state.last_deposit_msg = None
+
+if 'last_created_member' not in st.session_state:
+    st.session_state.last_created_member = None
+
+if 'voice_counter' not in st.session_state:
+    st.session_state.voice_counter = 0
+
+# ہر سیشن اسی مشترکہ ڈیٹا سے جڑتا ہے (اس لیے سب فونز پر ایک ہی ڈیٹا نظر آتا ہے)
 for _k in SHARED_KEYS:
     st.session_state[_k] = STORE[_k]
-
 if 'seen_sos' not in st.session_state:
     st.session_state.seen_sos = set()
 if 'my_loc' not in st.session_state:
     st.session_state.my_loc = None
 if 'last_sos_report' not in st.session_state:
     st.session_state.last_sos_report = None
-if 'sound_type_trigger' not in st.session_state:
-    st.session_state.sound_type_trigger = None
-if 'last_deposit_msg' not in st.session_state:
-    st.session_state.last_deposit_msg = None
-if 'last_created_member' not in st.session_state:
-    st.session_state.last_created_member = None
-if 'voice_counter' not in st.session_state:
-    st.session_state.voice_counter = 0
 
 if st.session_state.sound_type_trigger == "CHAT":
     play_chat_sound()
@@ -778,7 +995,7 @@ def render_login_screen():
             
             if "Password" in login_type:
                 user_input = st.text_input("Mobile Number or Gmail / موبائل نمبر یا ای میل:", placeholder="e.g. 03434067496 or email@gmail.com")
-                user_pass = st.text_input("Account Password / PIN / پاس ورڈ:", type="password")
+                user_pass = st.text_input("Account Password / PIN / پاس ورڈ (👁️ آنکھ والے ائیکن سے دیکھیں):", type="password")
                 
                 st.caption("ℹ️ اپنا رجسٹرڈ موبائل نمبر اور پاس ورڈ درج کر کے نیچے دیے گئے بٹن پر کلک کریں۔")
                 
@@ -795,6 +1012,7 @@ def render_login_screen():
                             st.session_state.auth_state["email"] = user_data["email"]
                             st.session_state.auth_state["role"] = user_data["role"]
                             st.session_state.auth_state["name"] = user_data["name"]
+                            st.session_state.pending_cookie = create_login_token(clean_input)
                             rerun()
                         else:
                             st.error("❌ Incorrect Password / پاس ورڈ غلط ہے!")
@@ -838,12 +1056,29 @@ def render_login_screen():
                                 st.session_state.auth_state["logged_in"] = True
                                 st.session_state.auth_state["role"] = user_data["role"]
                                 st.session_state.auth_state["name"] = user_data["name"]
+                                st.session_state.pending_cookie = create_login_token(st.session_state.auth_state["phone_or_email"])
                                 rerun()
                         else:
                             st.error("❌ Invalid OTP Code / غلط کوڈ!")
                     if st.button("🔙 Change Number / نمبر تبدیل کریں", use_container_width=True):
                         st.session_state.auth_state["otp_sent"] = False
                         rerun()
+
+if st.session_state.get("clear_cookie"):
+    clear_cookie_js()
+    st.session_state.clear_cookie = False
+
+if not st.session_state.auth_state["logged_in"]:
+    _ck = _read_login_cookie()
+    _uk = user_from_token(_ck)
+    if _uk and _uk in st.session_state.registered_users:
+        _ud = st.session_state.registered_users[_uk]
+        if _ud.get("status") == "ACTIVE":
+            st.session_state.auth_state.update({
+                "logged_in": True, "phone_or_email": _uk, "email": _ud.get("email"),
+                "role": _ud["role"], "name": _ud["name"]
+            })
+            st.session_state.my_token = _ck
 
 if not st.session_state.auth_state["logged_in"]:
     render_login_screen()
@@ -853,14 +1088,18 @@ current_role = st.session_state.auth_state["role"]
 current_name = st.session_state.auth_state["name"]
 current_phone_email = st.session_state.auth_state["phone_or_email"]
 
+if st.session_state.get("pending_cookie"):
+    set_cookie_js(st.session_state.pending_cookie)
+    st.session_state.pending_cookie = None
+
 # ==============================================================================
-# 4. MAIN DASHBOARD
+# 4. MAIN DASHBOARD (100% TRANSPARENT TO ALL MEMBERS)
 # ==============================================================================
 st.markdown(f"""
     <div class="brand-banner">
         <div class="banner-flex">
             <div>
-                <h3 style="margin:0; font-size:1.3rem;">🛡 {APP_NAME} Portal</h3>
+                <h3 style="margin:0; font-size:1.3rem;">🛡️️ {APP_NAME} Portal</h3>
                 <p style="margin:0; font-size:0.9rem; opacity:0.9;">خوش آمدید, <strong>{current_name}</strong> [{current_role}]</p>
             </div>
             <div>
@@ -872,6 +1111,7 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
+# نئے ممبر کے لیے یاد دہانی: ایڈمن کا دیا ہوا PIN بدل لیں
 _my_record = st.session_state.registered_users.get(current_phone_email, {})
 if _my_record.get("must_change_pw"):
     st.warning("🔐 آپ کو ایڈمن نے عارضی PIN دیا تھا۔ براہ کرم نیچے ⚙️ بٹن سے اپنا ذاتی پاس ورڈ بنا لیں۔")
@@ -884,7 +1124,7 @@ with st.expander("🔐 آپ کے اختیارات / Your Permissions"):
         """, unsafe_allow_html=True)
     else:
         st.markdown("""
-            <div class="help-step">👁️️ <strong>ممبر:</strong> سارا مالیاتی ڈیٹا، ممبرز، چیٹ اور ووٹنگ دیکھ سکتا ہے۔</div>
+            <div class="help-step">👁️ <strong>ممبر:</strong> سارا مالیاتی ڈیٹا، ممبرز، چیٹ اور ووٹنگ دیکھ سکتا ہے۔</div>
             <div class="help-step">✅ رقم جمع کروانا، امداد کی درخواست، ووٹ، وائس/ٹیکسٹ میسج، SOS بٹن۔</div>
             <div class="help-step">🗑️ صرف اپنا میسج ڈیلیٹ کر سکتا ہے۔</div>
             <div class="help-step">⛔ ممبر شامل کرنا/ہٹانا، خرچہ لکھنا، کھاتے کی اینٹری ڈیلیٹ کرنا — صرف ایڈمن کے لیے۔</div>
@@ -893,7 +1133,7 @@ with st.expander("🔐 آپ کے اختیارات / Your Permissions"):
 col_top_act1, col_top_act2 = st.columns([1, 1])
 
 with col_top_act1:
-    with st.popover("⚙ Change Password / پاس ورڈ تبدیل کریں"):
+    with st.popover("⚙️ Change Password / پاس ورڈ تبدیل کریں"):
         curr_p = st.text_input("Current Password / موجودہ پاس ورڈ:", type="password")
         new_p1 = st.text_input("New Password / نیا پاس ورڈ:", type="password")
         new_p2 = st.text_input("Confirm New Password / نیا پاس ورڈ دوبارہ درج کریں:", type="password")
@@ -902,7 +1142,7 @@ with col_top_act1:
             user_rec = st.session_state.registered_users.get(current_phone_email)
             if user_rec and curr_p.strip() == user_rec.get("password"):
                 if new_p1.strip() and new_p1 == new_p2:
-                    update_user_password_globally(current_phone_email, new_p1.strip())
+                    update_user_password_globally(current_phone_email, new_p1.strip(), revoke=False)
                     st.success("✅ Password changed successfully! / پاس ورڈ تبدیل ہو گیا!")
                 else:
                     st.error("❌ Passwords do not match / دونوں پاس ورڈ مختلف ہیں۔")
@@ -911,67 +1151,66 @@ with col_top_act1:
 
 with col_top_act2:
     if st.button("🚪 Logout / لاگ آؤٹ", use_container_width=True):
+        drop_login_token(_read_login_cookie(), st.session_state.get("my_token"))
+        st.session_state.my_token = None
+        st.session_state.pending_cookie = None
+        st.session_state.clear_cookie = True
         st.session_state.auth_state["logged_in"] = False
         st.session_state.auth_state["otp_sent"] = False
         rerun()
 
 # ------------------------------------------------------------------------------
-# SECTION 1: LIVE GLOBAL FINANCIAL DASHBOARD
+# SECTION 1: GLOBAL FINANCIAL DASHBOARD (VISIBLE TO ALL)
 # ------------------------------------------------------------------------------
+total_deposits = sum(t["amount"] for t in st.session_state.transactions if t["type"] == "DEPOSIT" and t["status"] in ["APPROVED", "INSTANT_ADDITION"])
+total_spendings = sum(t["amount"] for t in st.session_state.transactions if t["type"] == "SPENDING")
+remaining_balance = total_deposits - total_spendings
+
+my_total_contributed = sum(t["amount"] for t in st.session_state.transactions if t["member_phone"] == current_phone_email and t["type"] == "DEPOSIT" and t["status"] in ["APPROVED", "INSTANT_ADDITION"])
+
 @st.fragment(run_every=3)
 def render_live_financial_dashboard():
-    total_deposits = sum(
-        t["amount"] for t in st.session_state.transactions 
-        if t["type"] == "DEPOSIT" and t["status"] in ["APPROVED", "INSTANT_ADDITION"]
-    )
-    total_spendings = sum(
-        t["amount"] for t in st.session_state.transactions 
-        if t["type"] == "SPENDING"
-    )
-    remaining_balance = total_deposits - total_spendings
-    my_total_contributed = sum(
-        t["amount"] for t in st.session_state.transactions 
-        if t["member_phone"] == current_phone_email and t["type"] == "DEPOSIT" and t["status"] in ["APPROVED", "INSTANT_ADDITION"]
-    )
+    _dep = sum(t["amount"] for t in st.session_state.transactions if t["type"] == "DEPOSIT" and t["status"] in ["APPROVED", "INSTANT_ADDITION"])
+    _spend = sum(t["amount"] for t in st.session_state.transactions if t["type"] == "SPENDING")
+    _rem = _dep - _spend
+    _mine = sum(t["amount"] for t in st.session_state.transactions if t["member_phone"] == current_phone_email and t["type"] == "DEPOSIT" and t["status"] in ["APPROVED", "INSTANT_ADDITION"])
 
     st.markdown("### 📊 Overall Family Financial Dashboard / فیملی کا مالیاتی خلاصہ")
     c_f1, c_f2, c_f3 = st.columns(3)
-
     with c_f1:
         st.markdown(f"""
             <div class="metric-card-white">
                 <h4>💰 Total Family Funds / کل جمع شدہ فنڈز</h4>
-                <h2>PKR {total_deposits:,}</h2>
+                <h2>PKR {_dep:,}</h2>
             </div>
         """, unsafe_allow_html=True)
-
     with c_f2:
         st.markdown(f"""
             <div class="metric-card-white" style="border-color:#EF4444;">
                 <h4 style="color:#FCA5A5 !important;">💸 Total Spendings / کل اخراجات</h4>
-                <h2>PKR {total_spendings:,}</h2>
+                <h2>PKR {_spend:,}</h2>
             </div>
         """, unsafe_allow_html=True)
-
     with c_f3:
         st.markdown(f"""
             <div class="metric-card-white" style="border-color:#10B981;">
                 <h4 style="color:#6EE7B7 !important;">🏦 Remaining Balance / بقایا محفوظ رقم</h4>
-                <h2>PKR {remaining_balance:,}</h2>
+                <h2>PKR {_rem:,}</h2>
             </div>
         """, unsafe_allow_html=True)
-
-    st.info(f"👤 **آپ کا اپنا جمع کروایا گیا کل حصہ (Your Personal Contribution):** PKR {my_total_contributed:,}")
+    st.info(f"👤 **آپ کا اپنا جمع کروایا گیا کل حصہ (Your Personal Contribution):** PKR {_mine:,}")
 
 render_live_financial_dashboard()
 
 if st.session_state.last_deposit_msg:
     _ld = st.session_state.last_deposit_msg
-    st.balloons()
+    if not _ld.get("shown"):
+        st.balloons()
+        _ld["shown"] = True
     st.markdown(f"""
-        <div style="background: linear-gradient(135deg, #065F46 0%, #047857 100%); 
-                    border: 2px solid #10B981; padding: 18px; border-radius: 12px; 
-                    margin-bottom: 15px; color: white; text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.4);">
+        <div style="background: linear-gradient(135deg, #065F46 0%, #047857 100%);
+                    border: 2px solid #10B981; padding: 18px; border-radius: 12px;
+                    margin-bottom: 15px; color: white; text-align: center;">
             <h3 style="margin:0; color:#A7F3D0;">🎉 تصدیق شدہ ڈپازٹ موصول ہو گیا!</h3>
             <h2 style="margin:5px 0; color:#FFFFFF;">PKR {_ld['amount']:,}</h2>
             <p style="font-size: 1.1rem; margin-top:10px;">{_ld['quote']}</p>
@@ -996,37 +1235,35 @@ st.markdown("""
 col_sos1, col_sos2 = st.columns([1.3, 1])
 
 with col_sos1:
-    st.markdown("**📍 مرحلہ 1: اپنی اصل لوکیشن آن کریں**")
-    
-    # HTML5 Native Geolocation Fallback
-    components.html("""
-        <script>
-        function getLocation() {
-            if (navigator.geolocation) {
-                navigator.geolocation.getCurrentPosition(function(position) {
-                    const lat = position.coords.latitude;
-                    const lon = position.coords.longitude;
-                    window.parent.postMessage({type: "GPS_LOC", lat: lat, lon: lon}, "*");
-                });
-            }
-        }
-        getLocation();
-        </script>
-    """, height=0)
-
-    if GEO_AVAILABLE:
+    st.markdown("**📍 مرحلہ 1: اپنی اصل لوکیشن آن کریں (نیچے نیلا بٹن دبا کر Allow کریں)**")
+    _gps_err = None
+    if _GPS is not None:
+        try:
+            _gv = _GPS(key="fc_gps_btn", default=None)
+        except Exception:
+            _gv = None
+        if isinstance(_gv, dict):
+            if _gv.get("lat") is not None and _gv.get("lon") is not None:
+                st.session_state.my_loc = {"lat": float(_gv["lat"]), "lon": float(_gv["lon"]), "acc": _gv.get("acc")}
+            elif _gv.get("error"):
+                _gps_err = _gv["error"]
+    elif GEO_AVAILABLE:
         _geo = streamlit_geolocation()
         if _geo and _geo.get("latitude") and _geo.get("longitude"):
             st.session_state.my_loc = {
                 "lat": float(_geo["latitude"]), "lon": float(_geo["longitude"]), "acc": _geo.get("accuracy")
             }
+    else:
+        st.warning("⚠️ لوکیشن بٹن لوڈ نہیں ہو سکا۔ ایپ Reboot کریں۔ اس دوران پیغام میں لوکیشن کے بغیر الرٹ جائے گا۔")
 
     _loc = st.session_state.my_loc
     if _loc:
         _acc = f" (درستگی ≈ {int(_loc['acc'])} میٹر)" if _loc.get("acc") else ""
         st.success(f"✅ آپ کی لوکیشن مل گئی{_acc}")
     else:
-        st.info("اوپر لوکیشن آئیکن دبا کر براؤزر کو 'Allow' کریں۔")
+        st.info("بٹن دبائیں اور براؤزر پوچھے تو 'Allow / اجازت دیں' دبائیں۔")
+        if _gps_err:
+            st.error("❌ لوکیشن کی اجازت نہیں ملی۔ Chrome ⋮ ← Settings ← Site settings ← Location میں اس ایپ کو Allow کریں، پھر صفحہ دوبارہ کھولیں۔")
 
     st.markdown("**🚨 مرحلہ 2: ہنگامی صورتحال میں بٹن دبائیں**")
     if st.button("🚨 PUSH FOR HELP / مدد کے لیے یہ بٹن دبائیں 🚨", type="primary", use_container_width=True):
@@ -1047,7 +1284,7 @@ with col_sos1:
             st.session_state.last_sos_report = notify_all_members(event)
         rerun()
 
-    st.markdown("**📲 مرحلہ 3: واٹس ایپ پر پوری فیملی کو بھیجیں**")
+    st.markdown("**📲 مرحلہ 3: واٹس ایپ پر پوری فیملی کو بھیجیں** (PUSH کے بعد یہ بٹن بھی ضرور دبائیں)")
     _wa_loc = st.session_state.my_loc
     _wa_event = {
         "name": current_name, "phone": _my_record.get("phone") or current_phone_email, "time": "",
@@ -1056,10 +1293,15 @@ with col_sos1:
     _wa_text = build_sos_text(_wa_event, with_time=False)
     st.link_button("📲 واٹس ایپ پر سب کو بھیجیں  ←  فیملی گروپ چنیں  ←  Send",
                    "https://wa.me/?text=" + urllib.parse.quote(_wa_text), use_container_width=True)
+    st.caption("💡 واٹس ایپ کھلے تو فیملی گروپ چن کر Send دبا دیں۔ پیغام پہلے سے لکھا ہوگا۔")
 
     _rep = st.session_state.last_sos_report
     if _rep:
-        st.error("🚨 الرٹ ایپ پر چلا گیا! اب اوپر والا **سبز واٹس ایپ بٹن** بھی دبائیں تاکہ سب کے واٹس ایپ پر پہنچے۔")
+        st.error("🚨 الرٹ ایپ اور ای میل پر چلا گیا! اب اوپر والا **سبز واٹس ایپ بٹن** بھی دبائیں تاکہ سب کے واٹس ایپ پر پہنچے۔")
+        _mail_total = len([r for r in _rep["results"] if r["email"] is not None])
+        if _mail_total:
+            _mail_ok = len([r for r in _rep["results"] if r["email"]])
+            st.caption(f"📧 ای میل خودکار گئی: {_mail_ok}/{_mail_total}")
         with st.expander("👥 یا ہر ممبر کو الگ الگ بھیجیں"):
             for r in _rep["results"]:
                 _lnk = f"https://wa.me/{to_intl_phone(r['phone'])}?text={urllib.parse.quote(_rep['text'])}"
@@ -1070,10 +1312,10 @@ with col_sos1:
 
     st.markdown("""
         <div class="rules-card">
-            <strong style="color:#EF4444;">⚠ ایمرجنسی بٹن کے ضروری قواعد و ضوابط (Rules):</strong><br/>
-            1️⃣ اس بٹن کو صرف حقیقی ہنگامی صورتحال میں استعمال کریں۔<br/>
-            2️⃣ بٹن دباتے ہی تمام ممبرز کو الرٹ مل جائے گا اور آپ واٹس ایپ کے ذریعے لوکیشن بھیج سکیں گے۔<br/>
-            3️⃣ غیر ضروری یا بلا وجہ ٹیسٹنگ نہ کریں۔
+            <strong style="color:#EF4444;">⚠️ ایمرجنسی بٹن کے ضروری قواعد و ضوابط (Rules):</strong><br/>
+            1️⃣ اس بٹن کو صرف حقیقی ہنگامی صورتحال (حادثہ، طبی ایمرجنسی، یا ناگہانی آفت) میں استعمال کریں۔<br/>
+            2️⃣ بٹن دباتے ہی ایپ کھولے ہوئے سب ممبرز کو الرٹ ملے گا، ای میل جائے گی، اور آپ واٹس ایپ کے بٹن سے سب کو اپنی لوکیشن بھیج سکیں گے۔<br/>
+            3️⃣ غیر ضروری یا بلا وجہ ٹیسٹنگ کے لیے یہ بٹن نہ دبائیں۔
         </div>
     """, unsafe_allow_html=True)
 
@@ -1087,6 +1329,7 @@ with col_sos2:
 
 @st.fragment(run_every=5)
 def sos_watcher():
+    """ہر 5 سیکنڈ بعد چیک کرتا ہے: کسی ممبر نے SOS دبایا ہو تو سب کو بینر + سائیرن + نقشہ۔"""
     active = [e for e in STORE["sos_events"] if e.get("active")]
     for ev in active[-3:]:
         st.error(f"🚨 ACTIVE EMERGENCY: {ev['name']} ({ev['phone']}) — {ev['time']}")
@@ -1108,7 +1351,7 @@ sos_watcher()
 st.divider()
 
 # ------------------------------------------------------------------------------
-# SECTION 3: FAMILY MEMBER LIVE STATUS
+# SECTION 3: FAMILY MEMBER LIVE STATUS (VISIBLE TO ALL)
 # ------------------------------------------------------------------------------
 st.markdown("<div class='content-section'>", unsafe_allow_html=True)
 st.subheader("👥 Family Members Live Status / فیملی ممبرز کی حالت")
@@ -1129,11 +1372,11 @@ for idx, (key, info) in enumerate(_phone_members):
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------------------------------------------------------------------
-# SECTION 4: ADMIN MANAGEMENT PANEL
+# SECTION 4: ADMIN MANAGEMENT PANEL (Role Protected Settings)
 # ------------------------------------------------------------------------------
 if current_role == "ADMIN":
     st.markdown("<div class='content-section'>", unsafe_allow_html=True)
-    st.subheader("⚙ Admin Management Panel / ایڈمن کنٹرول پینل")
+    st.subheader("⚙️ Admin Management Panel / ایڈمن کنٹرول پینل")
     
     adm_tab1, adm_tab2, adm_tab3, adm_tab4, adm_tab5 = st.tabs([
         "💸 Expense / خرچہ",
@@ -1205,7 +1448,7 @@ if current_role == "ADMIN":
         st.caption("💡 PIN خالی چھوڑیں تو ایپ خود 6 ہندسوں کا رینڈم PIN بنا دے گی۔")
         with st.form("add_phone_form", clear_on_submit=True):
             new_p = st.text_input("Mobile Number / موبائل نمبر:*", placeholder="03XXXXXXXXX")
-            new_e = st.text_input("Member Email / ای میل (اختیاری):", placeholder="member@gmail.com")
+            new_e = st.text_input("Member Email / ای میل (اختیاری، نہ ہو تو خالی چھوڑیں):", placeholder="member@gmail.com")
             new_n = st.text_input("Member Name / ممبر کا نام:*", placeholder="e.g. Ali (Son)")
             new_pass = st.text_input("Assign Initial PIN / پاس ورڈ رکھیں (خالی = رینڈم):", value="")
             btn_add_p = st.form_submit_button("➕ Authorize Member / ممبر شامل کریں")
@@ -1215,9 +1458,11 @@ if current_role == "ADMIN":
                 if not phone_key or not new_n.strip():
                     st.error("❌ نمبر اور نام ضروری ہیں۔")
                 elif not is_valid_pk_mobile(phone_key):
-                    st.error("❌ موبائل نمبر 03XXXXXXXXX فارمیٹ میں لکھیں۔")
+                    st.error("❌ موبائل نمبر 03XXXXXXXXX (11 ہندسے) فارمیٹ میں لکھیں۔")
                 elif phone_key in st.session_state.registered_users:
                     st.error("⚠️ یہ نمبر پہلے سے رجسٹرڈ ہے۔")
+                elif email_key and "@" not in email_key:
+                    st.error("❌ ای میل درست نہیں ہے۔")
                 else:
                     final_pin = new_pass.strip() or generate_pin(6)
                     user_entry = {
@@ -1226,6 +1471,7 @@ if current_role == "ADMIN":
                         "phone": phone_key
                     }
                     st.session_state.registered_users[phone_key] = user_entry
+                    # ای میل سے بھی لاگ ان ہو سکے
                     if email_key and email_key not in st.session_state.registered_users:
                         st.session_state.registered_users[email_key] = dict(user_entry)
                     st.session_state.last_created_member = {
@@ -1256,6 +1502,15 @@ if current_role == "ADMIN":
                 st.session_state.last_created_member = None
                 rerun()
 
+        with st.expander("📖 ممبرز ایپ میں کیسے شامل ہوں گے؟ (مکمل طریقہ)"):
+            st.markdown("""
+                <div class="help-step"><strong>مرحلہ 1:</strong> ایڈمن اوپر فارم میں ممبر کا موبائل نمبر، ای میل اور نام لکھتا ہے۔</div>
+                <div class="help-step"><strong>مرحلہ 2:</strong> PIN خود لکھیں یا خالی چھوڑیں تو ایپ خود رینڈم PIN بنائے گی۔</div>
+                <div class="help-step"><strong>مرحلہ 3:</strong> "واٹس ایپ پر دعوت بھیجیں" پر کلک کریں، ممبر کو نمبر اور PIN پہنچ جائے گا۔</div>
+                <div class="help-step"><strong>مرحلہ 4:</strong> ممبر ایپ کا لنک کھول کر <em>نمبر + PIN</em> سے لاگ ان کرتا ہے۔ (OTP ضروری نہیں)</div>
+                <div class="help-step"><strong>مرحلہ 5:</strong> لاگ ان کے بعد ممبر اپنا پاس ورڈ بدل لے۔ اگر بھول جائے تو "Forgot Password" سے ای میل OTP آئے گا۔</div>
+            """, unsafe_allow_html=True)
+
     with adm_tab4:
         st.markdown("#### Manage Members / ممبرز کا انتظام")
         _manage_list = [(k, v) for k, v in st.session_state.registered_users.items() if "@" not in k and k != ADMIN_REAL_PHONE]
@@ -1268,11 +1523,17 @@ if current_role == "ADMIN":
                     fresh_pin = generate_pin(6)
                     update_user_password_globally(mk, fresh_pin)
                     mv["must_change_pw"] = True
+                    for kk, vv in st.session_state.registered_users.items():
+                        if vv.get("email") and vv.get("email") == mv.get("email"):
+                            vv["must_change_pw"] = True
                     st.session_state.last_created_member = {"name": mv["name"], "phone": mk, "pin": fresh_pin}
-                    st.success(f"نیا PIN: {fresh_pin}")
+                    st.success(f"نیا PIN: {fresh_pin}  (اوپر Add Members ٹیب میں واٹس ایپ لنک موجود ہے)")
                 new_status = "INACTIVE" if mv["status"] == "ACTIVE" else "ACTIVE"
                 if col_mb.button(f"🔁 {new_status} کریں", key=f"stat_{mk}"):
                     mv["status"] = new_status
+                    for kk, vv in st.session_state.registered_users.items():
+                        if vv.get("email") and vv.get("email") == mv.get("email"):
+                            vv["status"] = new_status
                     rerun()
                 if st.button("🗑️ Remove Member / ممبر ہٹائیں", key=f"rm_{mk}", type="primary"):
                     _em = mv.get("email")
@@ -1292,7 +1553,7 @@ if current_role == "ADMIN":
                 _rp = t.get("receipt_path")
                 if _rp and os.path.exists(_rp) and _rp.lower().endswith((".jpg", ".jpeg", ".png")):
                     st.image(_rp, use_container_width=True)
-                _fix_amt = st.number_input("رقم درست کریں:", min_value=1, value=int(t["amount"]), step=100, key=f"fix_{t['id']}")
+                _fix_amt = st.number_input("رقم درست کریں (ضرورت ہو تو):", min_value=1, value=int(t["amount"]), step=100, key=f"fix_{t['id']}")
                 _ca, _cb = st.columns(2)
                 if _ca.button("✅ Approve / منظور", key=f"apv_{t['id']}", use_container_width=True):
                     t["amount"] = int(_fix_amt)
@@ -1307,7 +1568,7 @@ if current_role == "ADMIN":
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------------------------------------------------------------------
-# SECTION 5: FAST DEPOSIT FUNDS & INSTANT RECEIPT SUBMISSION
+# SECTION 5: DEPOSIT FUNDS & RECEIPT SUBMISSION
 # ------------------------------------------------------------------------------
 st.markdown("<div class='content-section'>", unsafe_allow_html=True)
 st.subheader("💰 Deposit Funds & Submit Receipt / فنڈ میں رقم جمع کروائیں")
@@ -1321,8 +1582,12 @@ with col_dep1:
 
 with col_dep2:
     st.markdown("#### Submit Payment Receipt / رسید جمع کروائیں")
-    st.caption("⚡ اسکرین شاٹ اپ لوڈ کریں، رقم چند سیکنڈ میں تصدیق ہو کر فوری شامل ہو جائے گی۔")
-    
+    st.caption("⚡ اسکرین شاٹ اپ لوڈ کریں، رقم رسید سے پڑھ کر تصدیق ہوتی ہے۔ رقم 0 چھوڑ دیں تو خود بھر جائے گی۔")
+    _fm = st.session_state.get("flash_msg")
+    if _fm:
+        getattr(st, _fm[0])(_fm[1])
+        st.session_state.flash_msg = None
+
     with st.form("submit_deposit_form", clear_on_submit=True):
         dep_amount = st.number_input("Amount (PKR) / رقم (0 = اسکرین شاٹ سے خود پڑھیں):", min_value=0, step=500, value=0)
         dep_txnid = st.text_input("Transaction Ref ID (Optional) / ٹرانزیکشن آئی ڈی (اختیاری):", placeholder="e.g. 982310293")
@@ -1335,16 +1600,14 @@ with col_dep2:
         else:
             file_bytes = dep_file.getvalue()
             file_hash = "HASH-" + hashlib.sha256(file_bytes).hexdigest()[:24]
-            
             if file_hash in st.session_state.submitted_txn_ids:
                 st.error("⛔ ANTI-FRAUD ALERT: یہی تصویر پہلے سے سسٹم میں جمع ہو چکی ہے!")
             else:
-                ocr = {"ok": False, "amounts": [], "tid": None, "note": ""}
-                
+                ocr = {"ok": False, "amounts": [], "tid": None, "note": "PDF خودکار نہیں پڑھی جاتی"}
                 if dep_file.name.lower().endswith((".jpg", ".jpeg", ".png")):
-                    with st.spinner("⚡ 2 سیکنڈ میں رسید کی تصدیق کی جا رہی ہے..."):
+                    with st.spinner("⚡ رسید کی تصدیق کی جا رہی ہے... (پہلی بار 1-3 منٹ لگ سکتے ہیں)"):
                         ocr = read_receipt(file_bytes)
-                
+
                 typed_ref = dep_txnid.strip()
                 real_ref = typed_ref or ocr["tid"]
                 clean_ref = real_ref or f"REF-{random.randint(100000, 999999)}"
@@ -1354,23 +1617,23 @@ with col_dep2:
                 else:
                     final_amount = int(dep_amount)
                     status, note = "PENDING", ""
-                    
                     if ocr["ok"] and ocr["amounts"]:
                         if final_amount == 0:
                             final_amount = int(ocr["amounts"][0])
-                            status, note = "INSTANT_ADDITION", "رقم رسید سے خودکار طور پر پڑھ کر فنڈز میں شامل کر دی گئی"
+                            status, note = "INSTANT_ADDITION", "رقم رسید سے خودکار پڑھ کر شامل کی گئی"
                         elif any(abs(a - final_amount) < 1.0 for a in ocr["amounts"]):
-                            status, note = "INSTANT_ADDITION", "درج کی گئی رقم کی رسید سے تصدیق ہو گئی"
+                            status, note = "INSTANT_ADDITION", "درج کی گئی رقم رسید سے مل گئی"
                         else:
-                            status, note = "INSTANT_ADDITION", "رقم درج شدہ رقم کے مطابق منظور کر لی گئی"
+                            note = "درج کی گئی رقم رسید سے نہیں ملی"
+                            if INSTANT_ADD_WITHOUT_VERIFICATION:
+                                status = "INSTANT_ADDITION"
                     else:
-                        if final_amount > 0:
-                            status, note = "INSTANT_ADDITION", "رقم شامل کر دی گئی"
-                        else:
-                            note = ocr.get("note") or "رقم واضح نہیں تھی"
+                        note = ocr.get("note") or "رسید سے رقم نہیں پڑھی جا سکی"
+                        if final_amount > 0 and INSTANT_ADD_WITHOUT_VERIFICATION:
+                            status = "INSTANT_ADDITION"
 
                     if final_amount <= 0:
-                        st.error("❌ تصویر سے رقم نہیں پڑھی جا سکی۔ براہ کرم رقم کا خانے میں اندراج کریں اور دوبارہ جمع کروائیں۔")
+                        st.error("❌ تصویر سے رقم نہیں پڑھی جا سکی۔ رقم خود لکھ کر دوبارہ جمع کروائیں۔")
                     else:
                         new_id = next_txn_id()
                         receipt_path = ""
@@ -1402,29 +1665,30 @@ with col_dep2:
                             "note": note
                         })
 
-                        random_quote = random.choice(EMOTIONAL_THANKYOU_MESSAGES)
-                        st.session_state.last_deposit_msg = {
-                            "name": current_name, 
-                            "amount": final_amount, 
-                            "quote": random_quote
-                        }
-                        
-                        st.session_state.chat_threads["GENERAL"].append({
-                            "id": f"t{datetime.now().strftime('%H%M%S%f')}",
-                            "kind": "text",
-                            "sender": "🤖 System Notification",
-                            "sender_key": "SYSTEM",
-                            "time": datetime.now().strftime("%H:%M"),
-                            "msg": f"✨ **{current_name}** نے فنڈز میں **PKR {final_amount:,}** جمع کروائے ہیں۔ جزاک اللہ! 💖"
-                        })
-                        
+                        if status == "INSTANT_ADDITION":
+                            st.session_state.last_deposit_msg = {
+                                "name": current_name, "amount": final_amount,
+                                "quote": random.choice(EMOTIONAL_THANKYOU_MESSAGES)
+                            }
+                            st.session_state.chat_threads["GENERAL"].append({
+                                "id": f"t{datetime.now().strftime('%H%M%S%f')}",
+                                "kind": "text",
+                                "sender": "🤖 System Notification",
+                                "sender_key": "SYSTEM",
+                                "time": datetime.now().strftime("%H:%M"),
+                                "msg": f"✨ **{current_name}** نے فنڈز میں **PKR {final_amount:,}** جمع کروائے ہیں۔ جزاک اللہ! 💖"
+                            })
+                        else:
+                            st.session_state.flash_msg = (
+                                "warning",
+                                f"⏳ رسید جمع ہو گئی (PKR {final_amount:,})۔ {note}۔ ایڈمن کی منظوری کے بعد فنڈ میں شامل ہوگی۔")
                         save_store()
                         rerun()
 
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------------------------------------------------------------------
-# SECTION 6: ANONYMOUS VOTING & BILL PASSING
+# SECTION 6: ANONYMOUS VOTING & BILL PASSING (VISIBLE TO ALL)
 # ------------------------------------------------------------------------------
 st.markdown("<div class='content-section'>", unsafe_allow_html=True)
 st.subheader("🆘 Financial Aid Appeals & Bill Voting / امدادی بل پاسنگ سسٹم")
@@ -1450,7 +1714,7 @@ with col_aid1:
 
 with col_aid2:
     st.markdown("#### Public Appeals & Voting / بل پاسنگ گنتی")
-    st.caption("📜 اصول: بل پاس ہونے کے لیے تمام ممبرز کا 'متفق' ہونا ضروری ہے۔")
+    st.caption("📜 اصول: بل پاس ہونے کے لیے تمام ممبرز (درخواست دہندہ کے علاوہ) کا 'متفق' ہونا ضروری ہے۔ ایک بھی 'نا منظور' آ جائے تو بل مسترد۔ ووٹ خفیہ رہتے ہیں۔")
     if not st.session_state.assistance_requests:
         st.caption("ابھی کوئی درخواست موجود نہیں۔")
     _badges = {"PENDING": "⏳ ووٹنگ جاری", "APPROVED": "✅ بل پاس ہو گیا", "REJECTED": "❌ بل مسترد", "PAID": "💸 رقم ادا ہو چکی"}
@@ -1468,9 +1732,9 @@ with col_aid2:
         _voted = current_phone_email in req.get("voters", [])
         if req["status"] == "PENDING":
             if _is_owner:
-                st.caption("ℹ یہ آپ کی اپنی درخواست ہے، اس پر آپ ووٹ نہیں دے سکتے۔")
+                st.caption("ℹ️ یہ آپ کی اپنی درخواست ہے، اس پر آپ ووٹ نہیں دے سکتے۔")
             elif _voted:
-                st.caption("✔️ آپ ووٹ دے چکے ہیں")
+                st.caption("✔️ آپ ووٹ دے چکے ہیں (ایک ممبر = ایک ووٹ)")
             else:
                 col_v1, col_v2 = st.columns(2)
                 if col_v1.button(f"👍 I Agree / متفق ہوں #{req['id']}", key=f"agree_{req['id']}"):
@@ -1484,10 +1748,7 @@ with col_aid2:
                     refresh_bill_status(req)
                     rerun()
         if req["status"] == "APPROVED" and current_role == "ADMIN":
-            total_deposits = sum(t["amount"] for t in st.session_state.transactions if t["type"] == "DEPOSIT" and t["status"] in ["APPROVED", "INSTANT_ADDITION"])
-            total_spendings = sum(t["amount"] for t in st.session_state.transactions if t["type"] == "SPENDING")
-            remaining_balance = total_deposits - total_spendings
-            
+            remaining_balance = sum(t["amount"] for t in st.session_state.transactions if t["type"] == "DEPOSIT" and t["status"] in ["APPROVED", "INSTANT_ADDITION"]) - sum(t["amount"] for t in st.session_state.transactions if t["type"] == "SPENDING")
             if req["amount"] > remaining_balance:
                 st.warning(f"⚠️ فنڈ میں صرف PKR {remaining_balance:,} موجود ہیں۔")
             if st.button(f"💸 رقم ادا کریں اور خرچہ میں درج کریں #{req['id']}", key=f"pay_{req['id']}", type="primary"):
@@ -1519,6 +1780,7 @@ with c_call1:
 with c_call2:
     st.markdown(f"📹 **[📹 Start Video Call / ویڈیو کال کریں]({jitsi_url})**")
 
+# ---- Voice Message Recorder (اصلی وائس میسج: ریکارڈ -> سن کر -> بھیجیں) ----
 st.markdown("##### 🎙 Voice Message / وائس میسج بھیجیں")
 if hasattr(st, "audio_input"):
     recorded_voice = st.audio_input(
@@ -1539,10 +1801,14 @@ if hasattr(st, "audio_input"):
             st.session_state.voice_counter += 1
             st.session_state.sound_type_trigger = "CHAT"
             rerun()
+else:
+    st.warning("⚠️ وائس ریکارڈنگ کے لیے Streamlit ورژن 1.39 یا نیا چاہیے۔ ایپ Reboot کریں (Cloud پر نیا ورژن خود آ جاتا ہے)۔")
 
+# Chat Stream with DIRECT VISIBLE DELETE BUTTON (text + voice دونوں کے لیے)
 st.markdown("##### 💬 Chat Stream & Voice Messages / چیٹ ہسٹری")
 @st.fragment(run_every=8)
 def render_chat_stream():
+    """ہر 8 سیکنڈ بعد خود تازہ ہوتی ہے تاکہ دوسروں کے نئے میسج نظر آئیں۔"""
     if not st.session_state.chat_threads["GENERAL"]:
         st.caption("ابھی کوئی پیغام نہیں۔ پہلا پیغام آپ بھیجیں!")
 
@@ -1550,7 +1816,7 @@ def render_chat_stream():
         bubble_class = "chat-bubble-admin" if "Admin" in chat['sender'] else "chat-bubble-member"
         is_voice = chat.get("kind") == "voice"
         msg_id = chat.get("id", f"legacy_{idx}")
-        
+    
         col_msg1, col_msg2 = st.columns([7.5, 1.5])
         with col_msg1:
             st.markdown(f"""
@@ -1562,9 +1828,10 @@ def render_chat_stream():
             if is_voice and chat.get("audio"):
                 st.audio(chat["audio"], format="audio/wav")
         with col_msg2:
+            # Clear Red Delete Button for Every Message (text اور voice دونوں)
             owner_ok = chat.get("sender_key") == current_phone_email or chat['sender'] == current_name
             if current_role == "ADMIN" or owner_ok:
-                del_label = "🗑 Delete Voice" if is_voice else "🗑️ Delete"
+                del_label = "🗑️ Delete Voice" if is_voice else "🗑️ Delete"
                 if st.button(del_label, key=f"del_msg_{msg_id}", type="primary", use_container_width=True):
                     st.session_state.chat_threads["GENERAL"] = [
                         c for c in st.session_state.chat_threads["GENERAL"]
@@ -1601,6 +1868,7 @@ st.markdown("</div>", unsafe_allow_html=True)
 st.markdown("<div class='content-section'>", unsafe_allow_html=True)
 st.subheader("📜 Family Ledger Audit History / کھاتہ اور حساب کتاب")
 
+# شفافیت: تمام ممبرز پورا کھاتہ دیکھ سکتے ہیں (صرف پڑھنے کے لیے)، ڈیلیٹ صرف ایڈمن
 display_txns = st.session_state.transactions
 
 st.dataframe(
@@ -1621,7 +1889,7 @@ if current_role == "ADMIN" and st.session_state.transactions:
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------------------------------------------------------------------
-# SECTION 9: MONTHLY SUMMARY CHART
+# SECTION 9: MONTHLY SUMMARY CHART (نیا: ہر ممبر کا حصہ گراف میں)
 # ------------------------------------------------------------------------------
 st.markdown("<div class='content-section'>", unsafe_allow_html=True)
 st.subheader("📈 Member Contribution Chart / ممبرز کا حصہ")
